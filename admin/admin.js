@@ -1,66 +1,29 @@
-const DEFAULT_MENU = [
-  {id:1,name:'Dalma',category:'Veg',price:180,available:true},
-  {id:2,name:'Pakhala Bhata',category:'Veg',price:150,available:true},
-  {id:3,name:'Machha Besara',category:'Fish',price:280,available:true},
-  {id:4,name:'Chicken Kosha',category:'Chicken',price:320,available:true},
-  {id:5,name:'Odia Mutton Curry',category:'Mutton',price:390,available:true},
-  {id:6,name:'Chhena Poda',category:'Dessert',price:120,available:true}
-];
+const API='http://localhost:5000/api';
+const token=()=>localStorage.getItem('odishaAdminToken');
+const headers=()=>({Authorization:`Bearer ${token()}`});
 
-function getMenu(){
-  const saved=localStorage.getItem('odishaRasoiMenu');
-  if(!saved){localStorage.setItem('odishaRasoiMenu',JSON.stringify(DEFAULT_MENU));return [...DEFAULT_MENU];}
-  try{return JSON.parse(saved)}catch{return [...DEFAULT_MENU]}
-}
-function saveMenu(menu){localStorage.setItem('odishaRasoiMenu',JSON.stringify(menu));}
-
-const loginForm=document.getElementById('login-form');
-if(loginForm){
-  if(localStorage.getItem('odishaAdminLoggedIn')==='true') location.href='dashboard.html';
-  loginForm.addEventListener('submit',e=>{
-    e.preventDefault();
-    const email=document.getElementById('email').value.trim();
-    const password=document.getElementById('password').value;
-    const error=document.getElementById('login-error');
-    if(email==='admin@odisharasoi.com' && password==='admin123'){
-      localStorage.setItem('odishaAdminLoggedIn','true');
-      location.href='dashboard.html';
-    }else error.textContent='Invalid email or password.';
+if(document.getElementById('login-form')){
+  if(token()) location.href='dashboard.html';
+  document.getElementById('login-form').addEventListener('submit',async e=>{
+    e.preventDefault(); const error=document.getElementById('login-error'); error.textContent='';
+    try{const r=await fetch(`${API}/admin/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value.trim(),password:password.value})});const d=await r.json();if(!r.ok)throw Error(d.message);localStorage.setItem('odishaAdminToken',d.token);location.href='dashboard.html';}catch(x){error.textContent=x.message||'Login failed';}
   });
 }
 
-const dashboard=document.getElementById('dashboard');
-if(dashboard){
-  if(localStorage.getItem('odishaAdminLoggedIn')!=='true') location.href='login.html';
-  const menu=getMenu();
-  document.getElementById('menu-count').textContent=menu.length;
-  document.getElementById('available-count').textContent=menu.filter(x=>x.available).length;
-  document.getElementById('category-count').textContent=new Set(menu.map(x=>x.category)).size;
-  renderMenu();
-  document.getElementById('add-form').addEventListener('submit',e=>{
-    e.preventDefault();
-    const current=getMenu();
-    current.push({id:Date.now(),name:document.getElementById('item-name').value.trim(),category:document.getElementById('item-category').value,price:Number(document.getElementById('item-price').value),available:true});
-    saveMenu(current);e.target.reset();renderMenu();updateStats();
-  });
-}
-
-function updateStats(){
-  const m=getMenu();
-  document.getElementById('menu-count').textContent=m.length;
-  document.getElementById('available-count').textContent=m.filter(x=>x.available).length;
-  document.getElementById('category-count').textContent=new Set(m.map(x=>x.category)).size;
-}
-function renderMenu(){
-  const body=document.getElementById('menu-body'); if(!body)return;
-  body.innerHTML='';
-  getMenu().forEach(item=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td>₹${item.price}</td><td><span class="status ${item.available?'':'off'}">${item.available?'Available':'Unavailable'}</span></td><td class="actions"><button class="secondary" onclick="toggleItem(${item.id})">${item.available?'Disable':'Enable'}</button><button class="danger" onclick="deleteItem(${item.id})">Delete</button></td>`;
-    body.appendChild(tr);
-  });
-}
-function toggleItem(id){const m=getMenu();const x=m.find(i=>i.id===id);if(x)x.available=!x.available;saveMenu(m);renderMenu();updateStats();}
-function deleteItem(id){if(!confirm('Delete this menu item?'))return;saveMenu(getMenu().filter(i=>i.id!==id));renderMenu();updateStats();}
-function logout(){localStorage.removeItem('odishaAdminLoggedIn');location.href='login.html';}
-function escapeHtml(v){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+if(document.getElementById('dashboard')){if(!token())location.href='login.html';loadAll();}
+async function api(path,options={}){const r=await fetch(API+path,{...options,headers:{...headers(),...(options.headers||{})}});if(r.status===401){logout();return;}const d=await r.json();if(!r.ok)throw Error(d.message||'Request failed');return d;}
+async function loadAll(){try{const [stats,menu,orders,customers,hours]=await Promise.all([api('/dashboard'),api('/menu'),api('/orders'),api('/customers'),api('/hours')]);renderStats(stats);renderMenu(menu);renderOrders(orders);renderCustomers(customers);renderHours(hours);}catch(e){console.error(e);}}
+function renderStats(s){document.getElementById('daily-orders').textContent=s.dailyOrders;document.getElementById('daily-revenue').textContent='₹'+Number(s.dailyRevenue).toFixed(0);document.getElementById('menu-count').textContent=s.menuItems;document.getElementById('customer-count').textContent=s.customers;}
+function renderMenu(items){const body=document.getElementById('menu-body');body.innerHTML=items.map(i=>`<tr><td><strong>${esc(i.name)}</strong></td><td>${esc(i.category)}</td><td>₹${Number(i.price).toFixed(0)}</td><td><span class="status ${i.available?'':'off'}">${i.available?'Available':'Unavailable'}</span></td><td class="actions"><button class="secondary" onclick='openEditModal(${JSON.stringify(i)})'>Edit</button><button class="secondary" onclick="toggleAvailability(${i.id},${!i.available})">${i.available?'Disable':'Enable'}</button><button class="danger" onclick="deleteItem(${i.id})">Delete</button></td></tr>`).join('')||'<tr><td colspan="5">No menu items.</td></tr>';}
+function renderOrders(items){const b=document.getElementById('orders-body');b.innerHTML=items.map(o=>`<tr><td>#${o.id}</td><td>${esc(o.name)}</td><td>${esc(o.phone)}</td><td>${o.items.map(i=>esc(i.name)+' × '+i.quantity).join(', ')}</td><td>₹${Number(o.total).toFixed(0)}</td><td><span class="status">${esc(o.status)}</span></td><td>${new Date(o.created_at).toLocaleString()}</td></tr>`).join('')||'<tr><td colspan="7">No orders yet.</td></tr>';}
+function renderCustomers(items){const b=document.getElementById('customers-body');b.innerHTML=items.map(c=>`<tr><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${c.orders}</td><td>₹${Number(c.total_spent).toFixed(0)}</td></tr>`).join('')||'<tr><td colspan="4">No customers yet.</td></tr>';}
+function renderHours(items){document.getElementById('hours-list').innerHTML=items.map(h=>`<div class="hour-row"><strong>${esc(h.day_name)}</strong><label><input type="checkbox" id="closed-${h.id}" ${h.is_closed?'checked':''} onchange="saveHours(${h.id})"> Closed</label><input type="time" id="open-${h.id}" value="${h.open_time||''}" ${h.is_closed?'disabled':''}><span>to</span><input type="time" id="close-${h.id}" value="${h.close_time||''}" ${h.is_closed?'disabled':''}><button class="secondary" onclick="saveHours(${h.id})">Save</button></div>`).join('');}
+async function saveHours(id){const closed=document.getElementById('closed-'+id).checked;await api('/hours/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_closed:closed,open_time:document.getElementById('open-'+id).value,close_time:document.getElementById('close-'+id).value})});loadAll();}
+function openAddModal(){document.getElementById('modal-title').textContent='Add Food';document.getElementById('food-form').reset();document.getElementById('food-id').value='';document.getElementById('food-available').checked=true;document.getElementById('food-modal').classList.remove('hidden');}
+function openEditModal(i){document.getElementById('modal-title').textContent='Edit Food';document.getElementById('food-id').value=i.id;document.getElementById('food-name').value=i.name;document.getElementById('food-category').value=i.category;document.getElementById('food-price').value=i.price;document.getElementById('food-description').value=i.description||'';document.getElementById('food-available').checked=i.available;document.getElementById('food-image').value='';document.getElementById('food-modal').classList.remove('hidden');}
+function closeModal(){document.getElementById('food-modal').classList.add('hidden');}
+document.getElementById('food-form')?.addEventListener('submit',async e=>{e.preventDefault();const fd=new FormData();fd.append('name',document.getElementById('food-name').value.trim());fd.append('category',document.getElementById('food-category').value);fd.append('price',document.getElementById('food-price').value);fd.append('description',document.getElementById('food-description').value);fd.append('available',document.getElementById('food-available').checked);if(document.getElementById('food-image').files[0])fd.append('image',document.getElementById('food-image').files[0]);const id=document.getElementById('food-id').value;await api(id?'/menu/'+id:'/menu',{method:id?'PUT':'POST',body:fd});closeModal();loadAll();});
+async function toggleAvailability(id,available){await api('/menu/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({available})});loadAll();}
+async function deleteItem(id){if(confirm('Delete this food item?')){await api('/menu/'+id,{method:'DELETE'});loadAll();}}
+function logout(){localStorage.removeItem('odishaAdminToken');location.href='login.html';}
+function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
