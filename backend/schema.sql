@@ -42,6 +42,15 @@ CREATE TABLE IF NOT EXISTS opening_hours (
   is_closed BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+CREATE TABLE IF NOT EXISTS feedback (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  email VARCHAR(160) NOT NULL,
+  phone VARCHAR(30) NOT NULL,
+  message TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 INSERT INTO opening_hours (day_name, open_time, close_time)
 VALUES
 ('Monday','11:00','22:30'),('Tuesday','11:00','22:30'),('Wednesday','11:00','22:30'),
