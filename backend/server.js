@@ -11,122 +11,27 @@ const { Pool } = require('pg');
 const app = express();
 const PORT = process.env.PORT || 5000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
 app.use(cors());
 app.use(express.json());
 const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 app.use('/uploads', express.static(uploadDir));
-
-const storage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, uploadDir),
-  filename: (_, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '-')}`)
-});
+const storage = multer.diskStorage({ destination: (_, __, cb) => cb(null, uploadDir), filename: (_, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '-')}`) });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
-
-function auth(req, res, next) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  if (!token) return res.status(401).json({ message: 'Authentication required' });
-  try { req.admin = jwt.verify(token, process.env.JWT_SECRET); next(); }
-  catch { res.status(401).json({ message: 'Invalid or expired token' }); }
-}
-
+function auth(req, res, next) { const token = req.headers.authorization?.replace('Bearer ', ''); if (!token) return res.status(401).json({ message: 'Authentication required' }); try { req.admin = jwt.verify(token, process.env.JWT_SECRET); next(); } catch { res.status(401).json({ message: 'Invalid or expired token' }); } }
 app.get('/api/health', (_, res) => res.json({ ok: true }));
-
-app.post('/api/admin/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (email !== process.env.ADMIN_EMAIL || !password) return res.status(401).json({ message: 'Invalid credentials' });
-  const ok = await bcrypt.compare(password, await bcrypt.hash(process.env.ADMIN_PASSWORD, 10));
-  if (!ok) return res.status(401).json({ message: 'Invalid credentials' });
-  const token = jwt.sign({ role: 'admin', email }, process.env.JWT_SECRET, { expiresIn: '8h' });
-  res.json({ token });
-});
-
-app.get('/api/menu', async (_, res) => {
-  try { res.json((await pool.query('SELECT * FROM menu_items ORDER BY id')).rows); }
-  catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.post('/api/menu', auth, upload.single('image'), async (req, res) => {
-  const { name, description, price, category, available = 'true' } = req.body;
-  if (!name || price === undefined || !category) return res.status(400).json({ message: 'Name, price and category are required' });
-  try {
-    const image = req.file ? `/uploads/${req.file.filename}` : '';
-    const q = `INSERT INTO menu_items(name,description,price,category,image_url,available) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`;
-    res.status(201).json((await pool.query(q, [name, description || '', price, category, image, available === 'true' || available === true])).rows[0]);
-  } catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.put('/api/menu/:id', auth, upload.single('image'), async (req, res) => {
-  const { name, description, price, category, available } = req.body;
-  try {
-    const old = (await pool.query('SELECT * FROM menu_items WHERE id=$1', [req.params.id])).rows[0];
-    if (!old) return res.status(404).json({ message: 'Menu item not found' });
-    const image = req.file ? `/uploads/${req.file.filename}` : old.image_url;
-    const q = `UPDATE menu_items SET name=$1,description=$2,price=$3,category=$4,image_url=$5,available=$6,updated_at=CURRENT_TIMESTAMP WHERE id=$7 RETURNING *`;
-    res.json((await pool.query(q, [name ?? old.name, description ?? old.description, price ?? old.price, category ?? old.category, image, available === undefined ? old.available : (available === 'true' || available === true), req.params.id])).rows[0]);
-  } catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.delete('/api/menu/:id', auth, async (req, res) => {
-  try { await pool.query('DELETE FROM menu_items WHERE id=$1', [req.params.id]); res.json({ message: 'Deleted' }); }
-  catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.get('/api/dashboard', auth, async (_, res) => {
-  try {
-    const [items, available, todayOrders, revenue, customers] = await Promise.all([
-      pool.query('SELECT COUNT(*)::int AS count FROM menu_items'),
-      pool.query('SELECT COUNT(*)::int AS count FROM menu_items WHERE available=true'),
-      pool.query("SELECT COUNT(*)::int AS count FROM orders WHERE created_at >= CURRENT_DATE"),
-      pool.query("SELECT COALESCE(SUM(total),0) AS total FROM orders WHERE created_at >= CURRENT_DATE"),
-      pool.query('SELECT COUNT(*)::int AS count FROM customers')
-    ]);
-    res.json({ menuItems: items.rows[0].count, availableItems: available.rows[0].count, dailyOrders: todayOrders.rows[0].count, dailyRevenue: revenue.rows[0].total, customers: customers.rows[0].count });
-  } catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.get('/api/orders', auth, async (_, res) => {
-  try {
-    const q = `SELECT o.id,o.total,o.status,o.created_at,c.name,c.phone,COALESCE(json_agg(json_build_object('name',oi.item_name,'quantity',oi.quantity,'price',oi.price)) FILTER (WHERE oi.id IS NOT NULL),'[]') items FROM orders o JOIN customers c ON c.id=o.customer_id LEFT JOIN order_items oi ON oi.order_id=o.id GROUP BY o.id,c.id ORDER BY o.created_at DESC`;
-    res.json((await pool.query(q)).rows);
-  } catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.get('/api/customers', auth, async (_, res) => {
-  try {
-    const q = `SELECT c.id,c.name,c.phone,COUNT(o.id)::int AS orders,COALESCE(SUM(o.total),0) AS total_spent FROM customers c LEFT JOIN orders o ON o.customer_id=c.id GROUP BY c.id ORDER BY c.name`;
-    res.json((await pool.query(q)).rows);
-  } catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.get('/api/hours', async (_, res) => {
-  try { res.json((await pool.query('SELECT * FROM opening_hours ORDER BY id')).rows); }
-  catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.put('/api/hours/:id', auth, async (req, res) => {
-  const { open_time, close_time, is_closed } = req.body;
-  try {
-    const q = `UPDATE opening_hours SET open_time=$1,close_time=$2,is_closed=$3 WHERE id=$4 RETURNING *`;
-    res.json((await pool.query(q, [open_time || null, close_time || null, !!is_closed, req.params.id])).rows[0]);
-  } catch (e) { res.status(500).json({ message: e.message }); }
-});
-
-app.post('/api/orders', async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { name, phone, items } = req.body;
-    await client.query('BEGIN');
-    const customer = (await client.query(`INSERT INTO customers(name,phone) VALUES($1,$2) ON CONFLICT(phone) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [name, phone])).rows[0];
-    let total = 0;
-    for (const item of items) total += Number(item.price) * Number(item.quantity);
-    const order = (await client.query('INSERT INTO orders(customer_id,total) VALUES($1,$2) RETURNING id,total,status,created_at', [customer.id, total])).rows[0];
-    for (const item of items) await client.query('INSERT INTO order_items(order_id,menu_item_id,item_name,quantity,price) VALUES($1,$2,$3,$4,$5)', [order.id, item.id || null, item.name, item.quantity, item.price]);
-    await client.query('COMMIT');
-    res.status(201).json(order);
-  } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ message: e.message }); }
-  finally { client.release(); }
-});
-
+app.post('/api/admin/login', async (req, res) => { const { email, password } = req.body; if (email !== process.env.ADMIN_EMAIL || !password) return res.status(401).json({ message: 'Invalid credentials' }); const ok = await bcrypt.compare(password, await bcrypt.hash(process.env.ADMIN_PASSWORD, 10)); if (!ok) return res.status(401).json({ message: 'Invalid credentials' }); const token = jwt.sign({ role: 'admin', email }, process.env.JWT_SECRET, { expiresIn: '8h' }); res.json({ token }); });
+app.get('/api/menu', async (_, res) => { try { res.json((await pool.query('SELECT * FROM menu_items ORDER BY id')).rows); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.post('/api/menu', auth, upload.single('image'), async (req, res) => { const { name, description, price, category, available = 'true' } = req.body; if (!name || price === undefined || !category) return res.status(400).json({ message: 'Name, price and category are required' }); try { const image = req.file ? `/uploads/${req.file.filename}` : ''; const q = `INSERT INTO menu_items(name,description,price,category,image_url,available) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`; res.status(201).json((await pool.query(q, [name, description || '', price, category, image, available === 'true' || available === true])).rows[0]); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.put('/api/menu/:id', auth, upload.single('image'), async (req, res) => { const { name, description, price, category, available } = req.body; try { const old = (await pool.query('SELECT * FROM menu_items WHERE id=$1', [req.params.id])).rows[0]; if (!old) return res.status(404).json({ message: 'Menu item not found' }); const image = req.file ? `/uploads/${req.file.filename}` : old.image_url; const q = `UPDATE menu_items SET name=$1,description=$2,price=$3,category=$4,image_url=$5,available=$6,updated_at=CURRENT_TIMESTAMP WHERE id=$7 RETURNING *`; res.json((await pool.query(q, [name ?? old.name, description ?? old.description, price ?? old.price, category ?? old.category, image, available === undefined ? old.available : (available === 'true' || available === true), req.params.id])).rows[0]); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.delete('/api/menu/:id', auth, async (req, res) => { try { await pool.query('DELETE FROM menu_items WHERE id=$1', [req.params.id]); res.json({ message: 'Deleted' }); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.get('/api/dashboard', auth, async (_, res) => { try { const [items, available, todayOrders, revenue, customers, feedback] = await Promise.all([pool.query('SELECT COUNT(*)::int AS count FROM menu_items'), pool.query('SELECT COUNT(*)::int AS count FROM menu_items WHERE available=true'), pool.query("SELECT COUNT(*)::int AS count FROM orders WHERE created_at >= CURRENT_DATE"), pool.query("SELECT COALESCE(SUM(total),0) AS total FROM orders WHERE created_at >= CURRENT_DATE"), pool.query('SELECT COUNT(*)::int AS count FROM customers'), pool.query('SELECT COUNT(*)::int AS count FROM feedback')]); res.json({ menuItems: items.rows[0].count, availableItems: available.rows[0].count, dailyOrders: todayOrders.rows[0].count, dailyRevenue: revenue.rows[0].total, customers: customers.rows[0].count, feedback: feedback.rows[0].count }); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.get('/api/orders', auth, async (_, res) => { try { const q = `SELECT o.id,o.total,o.status,o.created_at,c.name,c.phone,COALESCE(json_agg(json_build_object('name',oi.item_name,'quantity',oi.quantity,'price',oi.price)) FILTER (WHERE oi.id IS NOT NULL),'[]') items FROM orders o JOIN customers c ON c.id=o.customer_id LEFT JOIN order_items oi ON oi.order_id=o.id GROUP BY o.id,c.id ORDER BY o.created_at DESC`; res.json((await pool.query(q)).rows); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.put('/api/orders/:id/status', auth, async (req, res) => { const allowed = ['Pending','Confirmed','Preparing','Ready','Completed','Cancelled']; if (!allowed.includes(req.body.status)) return res.status(400).json({ message: 'Invalid order status' }); try { const row = (await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,total,status,created_at', [req.body.status, req.params.id])).rows[0]; if (!row) return res.status(404).json({ message: 'Order not found' }); res.json(row); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.get('/api/customers', auth, async (_, res) => { try { const q = `SELECT c.id,c.name,c.phone,COUNT(o.id)::int AS orders,COALESCE(SUM(o.total),0) AS total_spent FROM customers c LEFT JOIN orders o ON o.customer_id=c.id GROUP BY c.id ORDER BY c.name`; res.json((await pool.query(q)).rows); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.get('/api/hours', async (_, res) => { try { res.json((await pool.query('SELECT * FROM opening_hours ORDER BY id')).rows); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.put('/api/hours/:id', auth, async (req, res) => { const { open_time, close_time, is_closed } = req.body; try { const q = `UPDATE opening_hours SET open_time=$1,close_time=$2,is_closed=$3 WHERE id=$4 RETURNING *`; res.json((await pool.query(q, [open_time || null, close_time || null, !!is_closed, req.params.id])).rows[0]); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.post('/api/orders', async (req, res) => { const client = await pool.connect(); try { const { name, phone, items } = req.body; if (!name?.trim() || !phone?.trim() || !Array.isArray(items) || !items.length) return res.status(400).json({ message: 'Name, phone and at least one item are required' }); await client.query('BEGIN'); const customer = (await client.query(`INSERT INTO customers(name,phone) VALUES($1,$2) ON CONFLICT(phone) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [name.trim(), phone.trim()])).rows[0]; let total = 0; for (const item of items) { const quantity = Number(item.quantity); const price = Number(item.price); if (!item.name || !Number.isFinite(quantity) || quantity < 1 || !Number.isFinite(price) || price < 0) throw new Error('Invalid order item'); total += price * quantity; } const order = (await client.query('INSERT INTO orders(customer_id,total) VALUES($1,$2) RETURNING id,total,status,created_at', [customer.id, total])).rows[0]; for (const item of items) await client.query('INSERT INTO order_items(order_id,menu_item_id,item_name,quantity,price) VALUES($1,$2,$3,$4,$5)', [order.id, item.id || null, item.name, Number(item.quantity), Number(item.price)]); await client.query('COMMIT'); res.status(201).json({ ...order, message: 'Your order has been placed successfully!' }); } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ message: e.message }); } finally { client.release(); } });
+app.post('/api/feedback', async (req, res) => { const { name, email, phone, message } = req.body; if (!name?.trim() || !email?.trim() || !phone?.trim() || !message?.trim()) return res.status(400).json({ message: 'Please complete all feedback fields' }); try { const q = `INSERT INTO feedback(name,email,phone,message) VALUES($1,$2,$3,$4) RETURNING id,created_at`; const row = (await pool.query(q, [name.trim(), email.trim(), phone.trim(), message.trim()])).rows[0]; res.status(201).json({ ...row, message: 'Thank you! Your message has been received.' }); } catch (e) { res.status(500).json({ message: e.message }); } });
+app.get('/api/feedback', auth, async (_, res) => { try { res.json((await pool.query('SELECT * FROM feedback ORDER BY created_at DESC')).rows); } catch (e) { res.status(500).json({ message: e.message }); } });
 app.listen(PORT, () => console.log(`Odisha Rasoi API running on http://localhost:${PORT}`));
